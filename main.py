@@ -9,6 +9,8 @@ import cvxpy as cp
 import argparse
 import itertools
 
+FONTSIZE = 20
+
 def get_argparser():
     parser = argparse.ArgumentParser()
 
@@ -24,7 +26,7 @@ def get_argparser():
     parser.add_argument('--us_econ_year_step', type=int, default=5)
 
     parser.add_argument('--msom_idx', type=int, default=10)
-    parser.add_argument('--msom_idx_min', type=int, default=1)
+    parser.add_argument('--msom_idx_min', type=int, default=10)
     parser.add_argument('--msom_idx_max', type=int, default=38)
     parser.add_argument('--msom_idx_step', type=int, default=10)
 
@@ -171,6 +173,36 @@ def number_of_failures_lp(A, n, x, y, intervention_idx):
 
     return result
 
+def degree_distribution(A, out=True):
+
+    if out:
+        degrees = A.sum(1)
+    else:
+        degrees = A.sum(0)
+
+    values, counts = np.unique(degrees, return_counts=True)
+    counts = counts.astype(np.float64)
+    values = values.astype(np.float64)
+    counts /= counts.sum()
+
+    return values, counts
+
+def plot_degree_distribution(A, args, out=True):
+
+    plt.figure(figsize=(10, 10))
+    plt.title(f"{'Outdegree' if out else 'Indegree'} Distribution for US {get_extra_suptitle(args)}", fontsize=FONTSIZE)
+    plt.xlabel('Degree (log)', fontsize=FONTSIZE)
+    plt.ylabel('Frequency (log)', fontsize=FONTSIZE)
+    plt.xscale('log')
+    plt.yscale('log')
+
+    for key in A.keys():
+        values, counts = degree_distribution(A[key])
+        plt.plot(values + 1, counts, linewidth=0, marker='x', label=get_label(args, key))
+
+    plt.legend(fontsize=0.75*FONTSIZE)
+    plt.savefig(f"{'outdegree' if out else 'indegree'}_{args.name}.pdf")
+
 def load_us_economy(args):
     A = {}
     y = {}
@@ -186,6 +218,9 @@ def load_us_economy(args):
         A[year] = (values > 0).astype(np.float64)
         y[year] = 1 / (1e-5 + A[year].sum(0).max())
 
+    plot_degree_distribution(A, args, out=True)
+    plot_degree_distribution(A, args, out=False)    
+
     return A, y, labels
 
 def load_msom_willems(args):
@@ -196,11 +231,34 @@ def load_msom_willems(args):
 
     id_range = np.arange(args.msom_idx_min, args.msom_idx_max + 1, args.msom_idx_step)
 
-    for idx in id_range:
+    plt.figure(figsize=(10, 10))
+    plt.title('Tier Distribution for Supply-networks from Willems (2008)', fontsize=FONTSIZE)
+    plt.ylabel('Number of Nodes', fontsize=FONTSIZE)
+    plt.xlabel('Tier', fontsize=FONTSIZE)
+
+    max_val = -1
+    for i, idx in enumerate(id_range):
         df = pd.read_excel('msom-willems.xls', sheet_name=f"{'0' if idx < 10 else ''}{idx}_LL")
         G = nx.from_pandas_edgelist(df, 'sourceStage', 'destinationStage', create_using=nx.DiGraph)
         A[idx] = nx.to_numpy_array(G).astype(np.float64)
         y[idx] = 1 / (1e-5 + A[idx].sum(0).max())
+
+        df_stat = pd.read_excel('msom-willems.xls', sheet_name=f"{'0' if idx < 10 else ''}{idx}_SD")
+        
+        values, counts = np.unique(df_stat['relDepth'], return_counts=True)
+        values = 1 + values.astype(np.int64)
+        max_val = max(max_val, values.max())
+
+        plt.bar(values + 0.2 * i, counts, 0.2, label=f'{get_label(args, idx)}, Num Tiers: {values.max() + 1}, Num Edges: {int(A[idx].sum())}')
+
+    plt.xticks(np.arange(1, 1 + max_val), np.arange(1, 1 + max_val))
+
+    plt.xlim(1, max_val)
+    plt.legend(fontsize=0.75 * FONTSIZE)
+    plt.savefig('statistics.pdf')
+
+    plot_degree_distribution(A, args, out=True)
+    plot_degree_distribution(A, args, out=False)   
 
     return A, y, labels
 
@@ -243,9 +301,9 @@ def get_key(args):
 
 def resilience_lb_vs_key(args, A, y, labels):
     plt.figure(figsize=(10, 10))
-    plt.title(f'Lower bound on $R_G(\\varepsilon)$ for {get_extra_suptitle(args)}')
-    plt.xlabel('Intervention Budget $T$')
-    plt.ylabel('Resilience Lower Bound')
+    plt.title(f'Lower bound on $R_G(\\varepsilon)$ for {get_extra_suptitle(args)}', fontsize=FONTSIZE)
+    plt.xlabel('Intervention Budget $T$', fontsize=FONTSIZE)
+    plt.ylabel('Resilience Lower Bound', fontsize=FONTSIZE)
 
     for key in sorted(A.keys()):
         K = A[key].shape[0]
@@ -261,7 +319,7 @@ def resilience_lb_vs_key(args, A, y, labels):
 
     plt.xscale('log')
     plt.yscale('log')
-    plt.legend()
+    plt.legend(fontsize=0.75*FONTSIZE)
     plt.savefig(f'resilience_lb_vs_key_{args.name}.pdf')
 
 def resilience_lb_vs_y(args, A, y, labels):
@@ -274,9 +332,9 @@ def resilience_lb_vs_y(args, A, y, labels):
     I = np.eye(K, dtype=np.float64)
 
     plt.figure(figsize=(10, 10))
-    plt.title(f'Lower bound on $R_G(\\varepsilon)$ for {get_extra_suptitle(args)}')
-    plt.xlabel('Intervention Budget $T$')
-    plt.ylabel('Resilience Lower Bound')
+    plt.title(f'Lower bound on $R_G(\\varepsilon)$ for {get_extra_suptitle(args)}', fontsize=FONTSIZE)
+    plt.xlabel('Intervention Budget $T$', fontsize=FONTSIZE)
+    plt.ylabel('Resilience Lower Bound', fontsize=FONTSIZE)
 
     for yy in y_range:
         beta_katz_inverse = np.linalg.inv(I - yy * A[key]).sum(-1)
@@ -286,7 +344,7 @@ def resilience_lb_vs_y(args, A, y, labels):
 
     plt.yscale('log')
     plt.xscale('log')
-    plt.legend()
+    plt.legend(fontsize=0.75*FONTSIZE)
     plt.savefig(f'resilience_lb_vs_y_{args.name}.pdf')
 
 def visualize(args, A, y, labels, num_ticks=2):
@@ -318,29 +376,34 @@ def visualize(args, A, y, labels, num_ticks=2):
 def resilience_monte_carlo_vs_eps(args, A):
 
     plt.figure(figsize=(10, 10))
-    plt.title(f'$\\hat R_G(\\varepsilon)$ (Monte-Carlo Estimate) for {get_extra_suptitle(args)}')
-    plt.ylabel('$\\hat R_G(\\varepsilon)$')
-    plt.xlabel('$\\epsilon$')
+    plt.title(f'$\\hat R_G(\\varepsilon)$ (Monte-Carlo Estimate) for {get_extra_suptitle(args)}', fontsize=FONTSIZE)
+    plt.ylabel('$\\hat R_G(\\varepsilon)$', fontsize=FONTSIZE)
+    plt.xlabel('$\\epsilon$', fontsize=FONTSIZE)
 
     eps_range = np.linspace(0, 1, 20)
-    R_mc = np.zeros_like(eps_range)
 
     for key in A.keys():
+        R_mc = np.zeros_like(eps_range)
+        area_under_curve = 0
+
         K = A[key].shape[0]
         for i, eps in enumerate(eps_range):
             print('eps = ', eps)
             R_mc[i] = estimate_resilience(A[key], n=args.n, eps=eps, T=1000)
-            print('\n')
-
-        plt.plot(eps_range, R_mc, label=get_label(args, key))
+            
+            if i >= 1:
+                area_under_curve += R_mc[i] * (eps_range[i] - eps_range[i - 1])
+        
+        print(f'AUC: {area_under_curve}')
+        plt.plot(eps_range, R_mc, label=f'{get_label(args, key)} (AUC: {area_under_curve:.3f})')
     
-    plt.legend()
+    plt.legend(fontsize=0.75*FONTSIZE)
     plt.savefig(f'resilience_monte_carlo_vs_eps_{args.name}.pdf')
 
 def expected_number_of_failures_vs_lp(args, A, y):
     plt.figure(figsize=(10, 10))
-    plt.title(f'Expected Number of Failures (Monte-Carlo) vs LP Upper Bound for {get_extra_suptitle(args)}')
-    plt.xlabel('$x$')
+    plt.title(f'Expected Number of Failures (Monte-Carlo) vs LP Upper Bound for {get_extra_suptitle(args)}', fontsize=FONTSIZE)
+    plt.xlabel('$x$', fontsize=FONTSIZE)
 
     x_range = np.linspace(0, 1, 20)
     palette = itertools.cycle(sns.color_palette())
@@ -362,16 +425,16 @@ def expected_number_of_failures_vs_lp(args, A, y):
         plt.fill_between(x_range, F_mc_mean - F_mc_std, F_mc_mean + F_mc_std, color=color, alpha=0.2)
         plt.plot(x_range, F_lp, label=f'{get_label(args, key)} (LP)', color=color, linestyle='dotted')
 
-    plt.legend()
+    plt.legend(fontsize=0.75*FONTSIZE)
     plt.savefig(f'failures_vs_lp_{args.name}.pdf')
     
 
 def resilience_monte_carlo_vs_intervention(args, A):
     
     plt.figure(figsize=(10, 10))
-    plt.title(f'$\\hat R_G(\\varepsilon)$ (Monte-Carlo Estimate) vs. Interventions for {get_extra_suptitle(args)}')
-    plt.xlabel('Intervention Budget $T$')
-    plt.ylabel('$\\hat R_G(\\varepsilon)$')
+    plt.title(f'$\\hat R_G(\\varepsilon)$ (Monte-Carlo Estimate) vs. Interventions for {get_extra_suptitle(args)}', fontsize=FONTSIZE)
+    plt.xlabel('Intervention Budget $T$', fontsize=FONTSIZE)
+    plt.ylabel('$\\hat R_G(\\varepsilon)$', fontsize=FONTSIZE)
     
     for key in A.keys():
         K = A[key].shape[0] 
@@ -390,7 +453,7 @@ def resilience_monte_carlo_vs_intervention(args, A):
 
         plt.plot(T_range, R_mc_intervention, label=get_label(args, key))
 
-    plt.legend()
+    plt.legend(fontsize=0.75*FONTSIZE)
     plt.savefig(f'resilience_monte_carlo_vs_intervention_{args.name}.pdf')
 
 if __name__ == '__main__':
@@ -406,12 +469,11 @@ if __name__ == '__main__':
         A, y, labels = load_msom_willems(args)
 
     expected_number_of_failures_vs_lp(args, A, y)
-
     resilience_lb_vs_key(args, A, y, labels)
     # resilience_lb_vs_y(args, A, y, labels)
     visualize(args, A, y, labels)
     resilience_monte_carlo_vs_eps(args, A)
-    resilience_monte_carlo_vs_intervention(args, A)
+    # resilience_monte_carlo_vs_intervention(args, A)
 
 
 
