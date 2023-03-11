@@ -5,7 +5,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import cvxpy as cp
 import argparse
+import itertools
 
 def get_argparser():
     parser = argparse.ArgumentParser()
@@ -14,6 +16,7 @@ def get_argparser():
     parser.add_argument('--n', type=int, default=1)
     parser.add_argument('--eps', type=float, default=0.2)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('-y', type=float, default=1.0)
 
     parser.add_argument('--us_econ_year', type=int, default=2020)
     parser.add_argument('--us_econ_year_min', type=int, default=2000)
@@ -78,21 +81,24 @@ def draw(G, pos, measures, measure_name, ticks=None, labels=None):
                                    nodelist=measures.keys(),
                                    node_size=node_size)
     nodes.set_norm(mcolors.SymLogNorm(linthresh=0.01, linscale=1, base=10))
-    # labels = nx.draw_networkx_labels(G, pos)
+
     edges = nx.draw_networkx_edges(G, pos, alpha=0.1, width=0.5)
 
     plt.title(measure_name)
 
     if ticks is not None:
         cbar = plt.colorbar(nodes, ticks=ticks)
-        cbar.ax.set_yticklabels(labels)
+        cbar.ax.set_yticklabels(labels, fontsize=9, rotation=270)
     else:
-        cbar = plt.colorbar(nodes)
+        cbar = plt.colorbar(nodes, ticks=[1.0])
+        cbar.ax.set_yticklabels([' '])
 
-    cbar.set_label('Katz Centrality in $G^R$', rotation=270)
-    cbar.ax.set_title('Raw Material', fontsize=10)
-    cbar.ax.set_xlabel('Complex Product', fontsize=10)
+
+    # cbar.set_label('Katz Centrality in $G^R$', rotation=270, labelpad=1)
+    cbar.ax.set_title('More Raw', fontsize=10)
+    # cbar.ax.set_xlabel('Complex', fontsize=10)
     plt.axis('off')
+    plt.tight_layout()
     plt.savefig(f'visualization_{args.name}.pdf')
 
 def estimate_resilience(A, n, eps, T, intervention_idx=[]):
@@ -106,7 +112,7 @@ def estimate_resilience(A, n, eps, T, intervention_idx=[]):
 
     while lo < hi:
         mid = (lo + hi) // 2
-        p_est = estimate_probability(A, n, eps, T, x[mid], intervention_idx)
+        p_est, _ = estimate(A, n, eps, T, x[mid], intervention_idx, mode='survival_probability')
         p_std = np.sqrt(p_est * (1 - p_est) / T)
         print(f'x = {x[mid]:.3f}, Pr[S ≥ {1 - eps:.3f} * K] = {p_est:.3f} ± {p_std:.3f}')
         if p_est < lb: 
@@ -116,11 +122,13 @@ def estimate_resilience(A, n, eps, T, intervention_idx=[]):
 
     return x[mid]
 
-def estimate_probability(A, n, eps, T, x, intervention_idx):
-    correct = 0
+def estimate(A, n, eps, T, x, intervention_idx, mode='survival_probability', y=1):
+    correct = np.zeros(T)
     K = A.shape[0]
 
     for t in range(T):
+        Y = (np.random.uniform(size=(K, K)) <= y).astype(np.float64)
+        AY = A * Y 
         U = np.random.uniform(size=(K))
         W = (U <= 1 - x**n).astype(np.int64)
         if len(intervention_idx) > 0:
@@ -130,17 +138,38 @@ def estimate_probability(A, n, eps, T, x, intervention_idx):
         for _ in range(100):
             Z_old = Z
             for i in range(K):
-                Z[i] = np.prod(Z[A[i, :].nonzero()[0]]) * W[i]
+                Z[i] = np.prod(Z[AY[i, :].nonzero()[0]]) * W[i]
             
             if np.all(np.isclose(Z, Z_old)):
                 break
 
         S = Z.sum()
 
-        if S >= (1 - eps) * K:
-            correct += 1
+        if S >= (1 - eps) * K and mode == 'survival_probability':
+            correct[t] = 1
+        elif mode == 'survivals':
+            correct[t] = S
+        elif mode == 'failures':
+            correct[t] = K - S
 
-    return correct / T
+    return correct.mean(), correct.std()
+
+def number_of_failures_lp(A, n, x, y, intervention_idx):
+    K = A.shape[0]
+    ones = np.ones((K, 1))
+   
+    u = (x**n) * ones
+    u[intervention_idx] = 0
+
+    beta = cp.Variable((K, 1))
+    objective = cp.Maximize(cp.sum(beta))
+
+    constraints = [beta >= 0, beta <= ones, beta <= y * (A.T @ beta) + u]
+
+    prob = cp.Problem(objective, constraints)
+    result = prob.solve()
+
+    return result
 
 def load_us_economy(args):
     A = {}
@@ -282,8 +311,8 @@ def visualize(args, A, y, labels, num_ticks=2):
         ticks_labels = None
        
     beta_katz_inverse_dict = dict([(i, x) for i, x in enumerate(beta_katz_inverse)])
-    plt.figure()
-    draw(G, pos, beta_katz_inverse_dict, f'Visualization for {get_extra_suptitle(args)}', ticks, ticks_labels)
+    plt.figure(figsize=(10, 10))
+    draw(G, pos, beta_katz_inverse_dict, f'Visualization for {get_extra_title(args)}', ticks=ticks, labels=ticks_labels)
     plt.savefig(f'visualization_{args.name}.pdf')
 
 def resilience_monte_carlo_vs_eps(args, A):
@@ -307,6 +336,35 @@ def resilience_monte_carlo_vs_eps(args, A):
     
     plt.legend()
     plt.savefig(f'resilience_monte_carlo_vs_eps_{args.name}.pdf')
+
+def expected_number_of_failures_vs_lp(args, A, y):
+    plt.figure(figsize=(10, 10))
+    plt.title(f'Expected Number of Failures (Monte-Carlo) vs LP Upper Bound for {get_extra_suptitle(args)}')
+    plt.xlabel('$x$')
+
+    x_range = np.linspace(0, 1, 20)
+    palette = itertools.cycle(sns.color_palette())
+
+    for key in A.keys():
+        color = next(palette)
+
+        F_mc_mean = np.zeros_like(x_range)
+        F_mc_std = np.zeros_like(x_range)
+        F_lp = np.zeros_like(x_range)
+
+        for i, x in enumerate(x_range):
+            F_lp[i] = number_of_failures_lp(A[key], args.n, x=x, y=y[key], intervention_idx=[])
+            F_mc_mean[i], F_mc_std[i] = estimate(A[key], args.n, T=1000, x=x, mode='failures', y=y[key], eps=0, intervention_idx=[])    
+            
+            print(f'x = {x}, LP = {F_lp[i]}, MC = {F_mc_mean[i]}')
+
+        plt.plot(x_range, F_mc_mean, label=f'{get_label(args, key)} (MC)', color=color)
+        plt.fill_between(x_range, F_mc_mean - F_mc_std, F_mc_mean + F_mc_std, color=color, alpha=0.2)
+        plt.plot(x_range, F_lp, label=f'{get_label(args, key)} (LP)', color=color, linestyle='dotted')
+
+    plt.legend()
+    plt.savefig(f'failures_vs_lp_{args.name}.pdf')
+    
 
 def resilience_monte_carlo_vs_intervention(args, A):
     
@@ -346,6 +404,8 @@ if __name__ == '__main__':
         A, y, labels = load_random(args)
     elif args.name == 'msom_willems':
         A, y, labels = load_msom_willems(args)
+
+    expected_number_of_failures_vs_lp(args, A, y)
 
     resilience_lb_vs_key(args, A, y, labels)
     # resilience_lb_vs_y(args, A, y, labels)
