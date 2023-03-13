@@ -14,7 +14,7 @@ FONTSIZE = 20
 def get_argparser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--name', type=str, default='us_econ', choices=['us_econ', 'er', 'ba', 'msom_willems'])
+    parser.add_argument('--name', type=str, default='us_econ', choices=['us_econ', 'er', 'ba', 'msom_willems', 'wiot'])
     parser.add_argument('--n', type=int, default=1)
     parser.add_argument('--eps', type=float, default=0.2)
     parser.add_argument('--seed', type=int, default=0)
@@ -42,6 +42,9 @@ def get_argparser():
     parser.add_argument('--ba_m_max', type=int, default=5)
     parser.add_argument('--ba_m_step', type=int, default=1)
 
+    parser.add_argument('--wiot_countries', default='USA,JPN,GBR,CHN', type=str)
+    parser.add_argument('--wiot_country', default='JPN', type=str)
+
     return parser.parse_args()
 
 def get_extra_title(args):
@@ -53,6 +56,8 @@ def get_extra_title(args):
         return f'BA graph with $K = {args.ba_K}, m = {args.ba_m}$'
     elif args.name == 'msom_willems':
         return f'Supply-chain network {args.msom_idx} from Willems (2008)'
+    elif args.name == 'wiot':
+        return f'I-O Table for {args.wiot_country}'
 
 def get_extra_suptitle(args):
     if args.name == 'us_econ':
@@ -63,6 +68,8 @@ def get_extra_suptitle(args):
         return f'BA graphs with $K = {args.ba_K}$'
     elif args.name == 'msom_willems':
         return f'Supply-chain networks from Willems (2008)'
+    elif args.name == 'wiot':
+        return f'World I-O Tables'
     
 def get_label(args, key):
     if args.name == 'us_econ':
@@ -73,10 +80,12 @@ def get_label(args, key):
         return f'$m = {key}$'
     elif args.name == 'msom_willems':
         return f'Network #{key}'
+    elif args.name == 'wiot':
+        return f'Country: {key}'
 
 def draw(G, pos, measures, measure_name, ticks=None, labels=None):
     node_size = np.array([v for v in measures.values()])
-    node_size = node_size / node_size.max() * 100
+    node_size = node_size / node_size.max() * 100 * 2
 
     nodes = nx.draw_networkx_nodes(G, pos, cmap=plt.cm.plasma, 
                                    node_color=list(measures.values()),
@@ -84,20 +93,21 @@ def draw(G, pos, measures, measure_name, ticks=None, labels=None):
                                    node_size=node_size)
     nodes.set_norm(mcolors.SymLogNorm(linthresh=0.01, linscale=1, base=10))
 
+
     edges = nx.draw_networkx_edges(G, pos, alpha=0.1, width=0.5)
 
-    plt.title(measure_name)
+    plt.title(measure_name, fontsize=FONTSIZE)
 
     if ticks is not None:
         cbar = plt.colorbar(nodes, ticks=ticks)
         cbar.ax.set_yticklabels(labels, fontsize=9, rotation=270)
     else:
-        cbar = plt.colorbar(nodes, ticks=[1.0])
-        cbar.ax.set_yticklabels([' '])
+        cbar = plt.colorbar(nodes)
+        # cbar.ax.set_yticklabels([' '])
 
 
     # cbar.set_label('Katz Centrality in $G^R$', rotation=270, labelpad=1)
-    cbar.ax.set_title('More Raw', fontsize=10)
+    # cbar.ax.set_title('More Raw', fontsize=FONTSIZE)
     # cbar.ax.set_xlabel('Complex', fontsize=10)
     plt.axis('off')
     plt.tight_layout()
@@ -285,6 +295,40 @@ def load_random(args):
 
     return A, y, labels
 
+def load_wiot(args):
+
+    df = pd.read_excel('wiot.xlsb', sheet_name='2014', skiprows=2, nrows=2410)
+
+    countries = args.wiot_countries.split(',')
+
+    indices = {}
+
+    for country in countries:
+        indices[country] = (+float('inf'), -float('inf'))
+
+    for i in range(df.values[:, 2].shape[0]):
+        if df.values[i, 2] in countries:
+            start, end = indices[df.values[i, 2]]
+            start = min(start, i)
+            end = max(end, i)
+            indices[df.values[i, 2]] = (start, end)
+    
+    A = {}
+    y = {}
+    labels = {}
+
+    for country in countries:
+        start, end = indices[country]
+        values = df.values[start:end+1, start+1:end+2].astype(np.float64)
+        A[country] = (values > 0).astype(np.float64)
+        idx = np.arange(A[country].shape[0])
+        A[country][idx, idx] = 0
+        y[country] = 1 / (1e-5 + A[country].sum(0).max())
+        labels[country] = df.values[start:end+1, 1]
+    # import pdb; pdb.set_trace()
+
+    return A, y, labels
+
 def get_key(args):
     if args.name == 'us_econ':
         key = args.us_econ_year
@@ -294,6 +338,8 @@ def get_key(args):
         key = args.er_p
     elif args.name == 'ba':
         key = args.ba_m
+    elif args.name == 'wiot':
+        key = args.wiot_country
     else:
         key = ''
 
@@ -350,6 +396,8 @@ def resilience_lb_vs_y(args, A, y, labels):
 def visualize(args, A, y, labels, num_ticks=2):
     key = get_key(args)
 
+
+
     K = A[key].shape[0]
     # Plot graph and visualize Katz centralities
     G = nx.from_numpy_array(A[key], create_using=nx.DiGraph)
@@ -359,6 +407,8 @@ def visualize(args, A, y, labels, num_ticks=2):
 
     beta_katz_inverse = np.linalg.inv(I - y[key] * A[key]).sum(-1)
     
+    # import pdb; pdb.set_trace()
+
     if args.name == 'us_econ':
         ordering = np.argsort(-beta_katz_inverse)
         ticks_linspace = np.linspace(0, len(ordering) - 1, num_ticks).astype(np.int64)
@@ -467,6 +517,8 @@ if __name__ == '__main__':
         A, y, labels = load_random(args)
     elif args.name == 'msom_willems':
         A, y, labels = load_msom_willems(args)
+    elif args.name == 'wiot':
+        A, y, labels = load_wiot(args)
 
     expected_number_of_failures_vs_lp(args, A, y)
     resilience_lb_vs_key(args, A, y, labels)
