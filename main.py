@@ -62,8 +62,10 @@ def get_argparser():
     parser.add_argument('--ba_m_max', type=int, default=5)
     parser.add_argument('--ba_m_step', type=int, default=1)
 
-    parser.add_argument('--wiot_countries', default='USA,JPN,GBR,CHN', type=str)
-    parser.add_argument('--wiot_country', default='JPN', type=str)
+    parser.add_argument('--wiot_countries', default='USA,JPN,GBR,CHN,IDN,IND', type=str)
+    parser.add_argument('--wiot_country', default='CHN', type=str)
+
+    parser.add_argument('--sf_K', type=int, default=100)
 
     return parser.parse_args()
 
@@ -155,6 +157,8 @@ def get_extra_title(args):
         return f'Supply-chain network {args.msom_idx} from Willems (2008)'
     elif args.name == 'wiot':
         return f'I-O Table for {args.wiot_country}'
+    elif args.name == 'rdag':
+        return f'Random DAG with p = {args.er_p}'
 
 def get_extra_suptitle(args):
     if args.name == 'us_econ':
@@ -167,11 +171,15 @@ def get_extra_suptitle(args):
         return f'Supply-chain networks from Willems (2008)'
     elif args.name == 'wiot':
         return f'World I-O Tables'
+    elif args.name == 'sf':
+        return f'Scale-free Graph'
+    elif args.name == 'rdag':
+        return f'Random DAG'
     
 def get_label(args, key):
     if args.name == 'us_econ':
         return f'Year: {key}'
-    elif args.name == 'er':
+    elif args.name in ['er', 'rdag']:
         return f'$p = {key:.2f}$'
     elif args.name == 'ba':
         return f'$m = {key}$'
@@ -179,6 +187,8 @@ def get_label(args, key):
         return f'Network #{key}'
     elif args.name == 'wiot':
         return f'Country: {key}'
+    else:
+        return key
 
 def draw(G, pos, measures, measure_name, ticks=None, labels=None):
     node_size = np.array([v for v in measures.values()])
@@ -466,14 +476,24 @@ def degree_distribution(A, out=True):
     else:
         degrees = A.sum(0)
 
+    degrees += 1
+
     values, counts = np.unique(degrees, return_counts=True)
     counts = counts.astype(np.float64)
     values = values.astype(np.float64)
     counts /= counts.sum()
 
-    return values, counts
+    return degrees, values, counts
 
-def plot_degree_distribution(A, args, out=True):
+def powerlaw_fit(A, out=True):
+    if out:
+        degrees = A.sum(1)
+    else:
+        degrees = A.sum(0)
+
+    r
+
+def fit_degree_distribution(A, args, out=True):
 
     plt.figure(figsize=(FIGSIZE, FIGSIZE))
     plt.title(f"{'Outdegree' if out else 'Indegree'} Distribution for US {get_extra_suptitle(args)}")
@@ -483,8 +503,9 @@ def plot_degree_distribution(A, args, out=True):
     plt.yscale('log')
 
     for key in A.keys():
-        values, counts = degree_distribution(A[key])
-        plt.plot(values + 1, counts, linewidth=0, marker='x', label=get_label(args, key))
+        degrees, values, counts = degree_distribution(A[key], out=out)
+        results = powerlaw.Fit(degrees, xmin=1.0)
+        print(f'{get_label(args, key)}: alpha = {results.power_law.alpha}')
 
     plt.legend()
     plt.tight_layout()
@@ -504,9 +525,7 @@ def load_us_economy(args):
         labels[year] = df.values[0, 2:67]
         A[year] = (values > 0).astype(np.float64)
         y[year] = 1 / (1e-5 + A[year].sum(0).max())
-
-    plot_degree_distribution(A, args, out=True)
-    plot_degree_distribution(A, args, out=False)    
+   
 
     return A, y, labels
 
@@ -514,6 +533,7 @@ def load_msom_willems(args):
     A = {}
     y = {}
     labels = {}
+    depths = {}
 
     id_range = np.arange(args.msom_idx_min, args.msom_idx_max + 1, args.msom_idx_step)
 
@@ -546,10 +566,8 @@ def load_msom_willems(args):
     plt.tight_layout()
     plt.savefig('statistics.pdf', bbox_inches='tight')
 
-    plot_degree_distribution(A, args, out=True)
-    plot_degree_distribution(A, args, out=False)   
 
-    return A, y, labels
+    return A, y, labels, depths
 
 def load_random(args):
 
@@ -557,18 +575,27 @@ def load_random(args):
     y = {}
     labels = {} 
 
-    if args.name == 'er':
+    if args.name in ['er', 'rdag']:
         rng = np.linspace(args.er_p_min, args.er_p_max, args.er_p_linspace)
     elif args.name == 'ba':
         rng = np.arange(args.ba_m_min, args.ba_m_max + 1, args.ba_m_step)
+    elif args.name == 'sf':
+        rng = [(0.41, 0.54, 0.05, 0.2, 0)]
 
     for r in rng:
-        if args.name == 'er':
+        if args.name in ['er', 'rdag']:
             G = nx.erdos_renyi_graph(args.er_K, r, seed=args.seed, directed=True)
         elif args.name == 'ba':
             G = nx.barabasi_albert_graph(args.ba_K, r, seed=args.seed)
+        elif args.name == 'sf':
+            alpha, beta, gamma, delta_in, delta_out = r
+            G = nx.scale_free_graph(args.sf_K, alpha=alpha, beta=beta, gamma=gamma, delta_in=delta_in, delta_out=delta_out)
 
         A[r] = nx.to_numpy_array(G)
+
+        if args.name == 'rdag':
+            A[r] = np.triu(A[r])
+
         y[r] = 1 / (1e-5 + A[r].sum(0).max())
         labels[r] = []
 
@@ -613,12 +640,14 @@ def get_key(args):
         key = args.us_econ_year
     elif args.name == 'msom_willems':
         key = args.msom_idx
-    elif args.name == 'er':
+    elif args.name in ['er', 'rdag']:
         key = args.er_p
     elif args.name == 'ba':
         key = args.ba_m
     elif args.name == 'wiot':
         key = args.wiot_country
+    elif args.name == 'sf':
+        key = (0.41, 0.54, 0.05, 0.2, 0)
     else:
         key = ''
 
@@ -627,22 +656,24 @@ def get_key(args):
 def resilience_lb_vs_key(args, A, y, labels):
     plt.figure(figsize=(FIGSIZE, FIGSIZE))
     plt.title(f'Lower bound on $R_G(\\varepsilon)$ for {get_extra_suptitle(args)}')
-    plt.xlabel('Intervention Budget $T$')
+    plt.xlabel('Intervention Budget $T/K$')
     plt.ylabel('Resilience Lower Bound')
 
     for key in sorted(A.keys()):
         K = A[key].shape[0]
-        T_range = 1 + np.arange(K)
+        T_range = np.arange(K + 1)
         I = np.eye(K, dtype=np.float64)
         beta_katz_inverse = np.linalg.inv(I - y[key] * A[key]).sum(-1)
         beta_katz_inverse_ordered_cumsum = np.cumsum(np.sort(beta_katz_inverse))[::-1]
-        resilience_lb = (args.eps / beta_katz_inverse_ordered_cumsum)**(1/args.n)
+        resilience_lb = np.zeros(K + 1)
+        resilience_lb[1:] = (args.eps / beta_katz_inverse_ordered_cumsum)**(1/args.n)
+        resilience_lb[0] = (args.eps / beta_katz_inverse.sum())**(1/args.n)
         if key == '':
-            plt.plot(T_range, resilience_lb)
+            plt.plot(T_range / K, resilience_lb)
         else:
-            plt.plot(T_range, resilience_lb, label=get_label(args, key))
+            plt.plot(T_range / K, resilience_lb, label=get_label(args, key))
 
-    plt.xscale('log')
+    # plt.xscale('log')
     plt.yscale('log')
     plt.legend()
     plt.savefig(f'resilience_lb_vs_key_{args.name}.pdf')
@@ -786,8 +817,12 @@ def visualize(args, A, y, labels, num_ticks=2):
     K = A[key].shape[0]
     # Plot graph and visualize Katz centralities
     G = nx.from_numpy_array(A[key], create_using=nx.DiGraph)
-    pos = nx.spring_layout(G, seed=args.seed)
 
+    if args.name == 'wiot':
+        pos = nx.spring_layout(G, seed=args.seed, k=10 / np.sqrt(K))
+    else:
+        pos = nx.spring_layout(G, seed=args.seed)
+    
     I = np.eye(K)
 
     beta_katz_inverse = np.linalg.inv(I - y[key] * A[key]).sum(-1)
@@ -860,10 +895,28 @@ def expected_number_of_failures_vs_lp(args, A, y):
         plt.fill_between(x_range, F_mc_mean - F_mc_std, F_mc_mean + F_mc_std, color=color, alpha=0.2)
         plt.plot(x_range, F_lp, label=f'{get_label(args, key)} (LP)', color=color, linestyle='dotted')
 
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(f'failures_vs_lp_{args.name}.pdf', bbox_inches='tight')
+    plt.legend(fontsize=0.75*FONTSIZE)
+    plt.savefig(f'failures_vs_lp_{args.name}.pdf')
     
+
+def failures_distribution(args, A, y):
+    fig, ax = plt.subplots()
+    plt.ylabel('Number of Failures')
+    plt.xlabel('Frequency', fontsize=FONTSIZE)
+    T = 2000
+
+    for key in A.keys():
+        F = np.zeros(T)
+        for i in range(T):
+            F[i], _ = estimate(A[key], args.n, T=1, x=0.01, mode='failures', y=1, eps=0, intervention_idx=[])    
+        sns.histplot(F, ax=ax, )
+    
+        break
+
+    plt.legend()
+
+    plt.legend(fontsize=0.75*FONTSIZE)
+    plt.savefig(f'failures_distribution_{args.name}.pdf')
 
 def resilience_monte_carlo_vs_intervention(args, A):
     
@@ -889,9 +942,8 @@ def resilience_monte_carlo_vs_intervention(args, A):
 
         plt.plot(T_range, R_mc_intervention, label=get_label(args, key))
 
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(f'resilience_monte_carlo_vs_intervention_{args.name}.pdf', bbox_inches='tight')
+    plt.legend(fontsize=0.75*FONTSIZE)
+    plt.savefig(f'resilience_monte_carlo_vs_intervention_{args.name}.pdf')
 
 if __name__ == '__main__':
     sns.set_theme()
@@ -900,10 +952,12 @@ if __name__ == '__main__':
     # Load/generate data
     if args.name == 'us_econ':
         A, y, labels = load_us_economy(args)
-    elif args.name in ['er', 'ba']:
+        depths = None
+    elif args.name in ['er', 'ba', 'sf', 'rdag']:
         A, y, labels = load_random(args)
+        depths = None
     elif args.name == 'msom_willems':
-        A, y, labels = load_msom_willems(args)
+        A, y, labels, depths = load_msom_willems(args)
     elif args.name == 'wiot':
         A, y, labels = load_wiot(args)
 
